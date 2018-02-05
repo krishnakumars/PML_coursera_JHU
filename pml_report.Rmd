@@ -1,0 +1,139 @@
+---
+title: "Project Report - PML Coursera Course"
+author: "Krishna Sridharan"
+date: "February 4, 2018"
+output: html_document
+---
+# Objective
+To create a model to predict the "classe" variable describing the quality of the exercise based on a series of personal activity measurements  
+
+
+# Datasets
+* Training data: 19,622 observations with 160 co-variates/measurement types
+* Testing data: 20 observations with 160 co-variates/measurement types
+
+
+# Analysis
+## Data download and reading
+The training and testing data was downloaded from the links provided, and read into respective dataframes
+
+```{r}
+library(readr)
+pml_training <- suppressWarnings(read_csv("pml-training.csv"))
+pml_testing <- suppressWarnings(read_csv("pml-testing.csv"))
+```
+
+## Co-variate filtering and QC
+Upon viewing the dataframes cursorily, it appeared that a lot of predictors had either NA or a single unique value which would make them potentially useless for prediction of the classe variable  
+In order to list these near-zero variance predictors in testing and training the following commands were used:  
+
+```{r}
+## Eliminate near Zero covariates
+# Identify this is testing and training set
+library(caret)
+length(colnames(pml_training[nearZeroVar(pml_training)]))   ## This yields 41 columns which are invariate
+length(colnames(pml_testing[nearZeroVar(pml_testing)]))     ## This yields 101 columns which are invariate
+```
+As this indicated, if 101 out of 160 predictors are meaningless for prediction purposes, modelling these in the training data would be a waste of runtime as well. The rationale, again, is that we will choose **bold** 57 of the co-variates that show variance **bold**, and thus potential predictive value, and create our model from the same  
+
+```{r}
+# If only 101-41 columns are gonna be useful when you predict on the data, why bother with calculating 60 extra columns
+useless_test_columns = colnames(pml_testing[nearZeroVar(pml_testing)]) 
+useless_test_columns = append(useless_test_columns,c("problem_id","X1"))   ## Because these two columns don't make a difference
+pml_testing_clean = data.frame(pml_testing[,!colnames(pml_testing) %in% useless_test_columns])
+pml_training_clean = data.frame(pml_training[,!colnames(pml_training) %in% useless_test_columns])
+```
+
+Another issue with the data was that there are NA values which might affect the running of models and thus, we need to remove that as part of QC too
+```{r}
+pml_testing_clean = na.omit(pml_testing_clean)
+pml_training_clean = na.omit(pml_training_clean)
+```
+
+## Model training and cross-validation
+In order to more accurately choose our model for predicting testing data, we can do k-fold cross-validation on our data to see which predictor does best at training.    
+Choosing k was a tricky question but I used resources such as the following to determine that a 10-fold non-repeated Cross Validation would be sufficient for most model-selection:  
+* Why k=10 works well? https://stats.stackexchange.com/questions/27730/choice-of-k-in-k-fold-cross-validation    
+* Why is non-repeated CV ok? https://www.researchgate.net/post/Repeated_N-fold_cross_validation  
+
+Also setting a seed for reproducibility and easier comparison
+  
+```{r}
+set.seed(33833)
+train_control = trainControl(method="cv", number=10)
+```
+
+### Dimensionality reduction and choosing models
+Our dataset has 57 predictors which could still be a higher number of predictors than needed. For instance, the testing data has 20 observations but almost 3 times the number of predictors (n=57). Hence, I explored dimensionality reduction using PCA to reduce the number of predictors. In a problem that will benefit from reducing/condensing the predictors, PCA aids some machine learning methods through dimensionality reduction. Alternately, our prediction could also benefit from the increased number of dimensions and predictors, and performance could get affected by PCA.    
+In order to understand which classification/prediction models get affected by dimensionality reduction and which others do not, I did some literature review using the following references:   
+* A performance comparison of models: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.74.8032&rep=rep1&type=pdf   
+
+* Another performance comparison with and without PCA: Int. J. of Computers, Communications & Control, ISSN 1841-9836, E-ISSN 1841-9844 Vol. VI (2011), No. 2 (June), pp. 317-327      
+
+* A general overview of pros and cons of different ML algorithms: https://elitedatascience.com/machine-learning-algorithms     
+
+The two consideration for selecting models were as follows:    
+* Choose a model that performed well similar problems in literature    
+* Choose a wide variety of models to compare -   
+    + Multinomial logistic regression for data that be potentially described by a linear model - Known to benefit from PCA    
+    + k-nearest neighbor for potentially simpler cases - Known to benefit from PCA   
+    + Gradient boosting tree for classification trees on data with a high number of dimensions 
+    + Random Forest for classification trees   
+    + Support Vector Machines to model potential non-linearity in the data    
+    
+```{r}
+## PCA
+preproc = preProcess(pml_training_clean,method = c("center","scale","pca"))
+transformed_training = predict(preproc,pml_training_clean)
+
+# Penalized multinomial logistic regression with PCA
+model_penalized_mlg_pca = train(classe ~ ., data=transformed_training, trControl=train_control, method="multinom")
+model_penalized_mlg_pca
+getTrainPerf(model_penalized_mlg_pca)
+# K-nearest neighbors with PCA
+model_kknn_pca = train(classe ~ ., data=transformed_training, trControl=train_control, method="kknn")
+model_kknn_pca
+getTrainPerf(model_kknn_pca)
+# Ensemble methods of regression trees: Gradient Boosting Tree
+model_gbm = train(classe ~ ., data=pml_training_clean, trControl=train_control, method="gbm")
+model_gbm
+getTrainPerf(model_gbm)
+# Ensemble methods of regression trees: Random Forest
+model_rf = train(classe ~ ., data=pml_training_clean, trControl=train_control, method="rf")
+model_rf
+getTrainPerf(model_rf)
+# Finally, an SVM but non-linear, using RBF (linear SVMs perfomr similar to linear regression)
+model_svmRBF = train(classe ~ ., data=pml_training_clean, trControl=train_control, method="svmRadial")
+model_svmRBF
+getTrainPerf(model_svmRBF)
+```
+
+
+## Comparing models and choosing the best one
+The model performance on cross-validation data appears very close, with almost all models having >95% accuracy. Both Random Forest and the Gradient Bosoting Tree perform very well, apparently benefiting from the number of features. A more side-by-side comparison of the models' performance on the resamples confirms these two as the top performers with nearly a 100% accuracy.   
+Based on the higher values of kappa and accuracy, Random Forest seems to do slightly better
+```{r}
+results <- resamples(list(PMLG=model_penalized_mlg_pca, KNN=model_kknn_pca, GBM=model_gbm, RF=model_rf, SVMRBF=model_svmRBF))
+# summarize the distributions
+summary(results)
+# boxplots of results
+bwplot(results)
+# dot plots of results
+dotplot(results)
+# Final comparison
+getTrainPerf(model_rf)
+getTrainPerf(model_gbm)
+```
+
+### Estimating the out-of-sample error of the best model
+The estimate of the out of sample error can be obtained by looking at the results on the cross-validation dataset from the Random Forest model. Since we did cross-validation on the training data, the out of sample or generalization error of this model can be estimated using the Out Of Bag error of the random forest model as 0.03%
+```{r}
+model_rf$finalModel
+```
+
+
+## Predictions on testing data
+Both RF and GBM models agree on the class label predictions for the testing data
+```{r}
+predict(model_rf,pml_testing_clean)
+```
